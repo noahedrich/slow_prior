@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <script src="jatos.js"></script> <!-- add JATOS library -->
+    </head>
+    <script>
+        jatos.onLoad(function() {
+                // get Prolific ID
+                var prolific_id = jatos.urlQueryParameters.PROLIFIC_PID;
+                var id_json = JSON.stringify({prolific_id: prolific_id});
+                // save to JATOS study session data to pass to next components
+                jatos.studySessionData.prolific_id = prolific_id;
+                // save ID to database
+                jatos.startNextComponent(id_json);
+        })
+    </script>
+</html>

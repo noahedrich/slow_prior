@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <script src="jatos.js"></script> <!-- add JATOS library -->
+    </head>
+    <script>
+        jatos.onLoad(function() {
+            // save bonus info separately for easy paying of participants
+            var bonus_json = JSON.stringify({
+                prolific_id: jatos.studySessionData.prolific_id,
+                total_percentage: jatos.studySessionData.total_percentage,
+                bonus: jatos.studySessionData.bonus,
+            });
+            // save bonus to database and redirect
+            jatos.endStudyAndRedirect("https://app.prolific.co/submissions/complete?cc="+jatos.studySessionData.completion_code, bonus_json);
+        })
+    </script>
+</html>

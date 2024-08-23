@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
+        <title>Gem Hunter Game</title>
+        <script src="https://code.jquery.com/jquery-3.5.1.min.js" integrity="sha256-9/aliU8dGd2tb6OSsuzixeV4y/faTqgFtohetphbbj0=" crossorigin="anonymous"></script>
+		    <script src="lib/neurocode_lib.js"></script>
+
+        <script src="jspsych-6.1.0/jspsych.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-instructions.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-canvas-keyboard-response.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-html-keyboard-response.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-html-button-response.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-fullscreen.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-survey-text.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-survey-multi-choice.js"></script>
+        <script src="jspsych-6.1.0/plugins/jspsych-call-function.js"></script>
+        <script src="bowser.js"></script> <!-- a browser and operating system detector -->
+        <script src="jatos.js"></script> <!-- add JATOS library -->
+
+        <script type="text/javascript" src="texts.js"></script>
+        <script type="text/javascript" src="attention-checks.js"></script>
+        <script type="text/javascript" src="rgb-lab.js"></script>
+        <link href="jspsych-6.1.0/css/jspsych.css" rel="stylesheet" type="text/css"></link>
+
+        <style>
+        kbd {
+            border-radius: 2px;
+            padding: 2px;
+            border: 1px solid black;
+        }
+        </style>
+    </head>
+    <body></body>
+    <script>
+    /* ----- SET-UP ----- */
+    // --------------------- Functions ---------------------
+    function randn_bm() { // Box-Muller transform, returns random number drawn from a standard normal distribution
+      var u = 0, v = 0;
+      while(u === 0) u = Math.random(); //Converting [0,1) to (0,1)
+      while(v === 0) v = Math.random();
+      return Math.sqrt( -2.0 * Math.log( u ) ) * Math.cos( 2.0 * Math.PI * v );
+    };
+
+    function randn(mean, sd) { // draws random number from normal distribution with mean and sd
+      return randn_bm() * sd + mean
+    };
+
+    function pdf(x, mean, sd) { // Probability density function, from: https://github.com/errcw/gaussian/blob/master/lib/gaussian.js#L47
+      var variance = Math.pow(sd, 2),
+          m = sd * Math.sqrt(2 * Math.PI),
+          e = Math.exp(-Math.pow(x - mean, 2) / (2 * variance));
+      return e / m;
+    };
+
+    function range(start, stop, step) {
+      if (typeof stop == 'undefined') {
+          // one param defined
+          stop = start;
+          start = 0;
+      }
+      if (typeof step == 'undefined') {
+          step = 1;
+      }
+      if ((step > 0 && start >= stop) || (step < 0 && start <= stop)) {
+          return [];
+      }
+      var result = [];
+      for (var i = start; step > 0 ? i < stop : i > stop; i += step) {
+          result.push(i);
+      }
+      return result;
+    };
+
+    function angle2cart(angle, radius) { // transforms angle into x & y coordinates
+      var radians = angle * Math.PI/180,
+          x = Math.cos(radians) * radius,
+          y = Math.sin(radians) * radius;
+      return [x,y];
+    };
+
+    function cart2lab(ab) { // converts cartesian values to CIELAB colour space
+      // Luminance constant at 70, Take xy as equivalents of ab [range according to radius]
+      return [70, ab[0], ab[1]];
+    };
+
+    function angle2rgb(angle) {
+      return lab2rgb(cart2lab(angle2cart(angle, 51))).concat(255); // radius is chroma in CIELAB space
+    };
+
+    function angle_dist(target, test, max = 180, min = -180) {
+      var dist = target - test
+      while (dist>max  || dist<min) {
+        dist += (dist>max) ? -(max*2) : (dist<min) ? (max*2) : 0
+      }
+      if(dist < 0) dist = ~dist+1;
+      return dist
+    };
+
+    function reward_fnc(peak_angle, feat_angle) { //reward range 0-180
+      return 180 - angle_dist(peak_angle, feat_angle); //1 degree = 1 point
+    };
+
+    function noisy_reward_fnc(reward, sd) { //returns reward value with added noise
+      var noise = randn(0, sd);
+      if (reward + noise < 0) {
+        reward = Math.abs(reward + noise);
+      } else if (reward + noise > 180) {
+        reward = 180 - (reward + noise -180);
+      } else {
+        reward = reward + noise
+      }
+      return Math.floor(reward);
+    };
+
+    function rescale_reward(reward) { //returns reward value on range 0-100 (=percentage)
+      return Math.floor(reward/180*100);
+    };
+
+    function steps(arr){
+      //Input validation check
+      if(!arr || arr.length <2){
+         throw "Bad input!";
+      }
+
+      //If input is ok - Start from second element
+      var steps = [];
+      for(var i=1; i<arr.length; i++){
+          var currentElement  = arr[i];
+          var previousElement = arr[i-1];
+          steps.push(angle_dist(currentElement, previousElement))
+      }
+      return steps
+    };
+
+    function getAllIndexes(arr, val) {
+      var indexes = [], i;
+      for(i = 0; i < arr.length; i++)
+          if (arr[i] === val)
+              indexes.push(i);
+      return indexes;
+    };
+
+    // --------------------- Participant Info---------------------
+    // generate a random subject ID with 20 characters
+    var subject = jsPsych.randomization.randomID(20);
+
+    // record the subject_id and OS properties
+    jsPsych.data.addProperties({
+      subject: subject,
+      browser_name: bowser.name,
+      browser_version: bowser.version,
+      os_name: bowser.osname,
+      os_version: bowser.osversion,
+      screen_resolution: screen.width + ' x ' + screen.height
+    });
+
+    // --------------------- Parameters ---------------------
+    var n_unique_positions = 15,                          // how many unique values around the circle to sample (must work with 360); 24 --> 48 | 15 --> 30
+        step_size = 360/n_unique_positions,               // how many degrees between each unique position
+        block_positions_multiplyer = 4,                   // how many times to repeat the unique values within each block
+        block_length = block_positions_multiplyer * n_unique_positions, // n trials per block
+        conditions_multiplyer = 2,                        // how many times to repeat all 4 conditions, if 2 --> 2*4 conditions = 8 blocks
+        pair_positions_multiplyer = 2,                    // how many times to repeat unique values to create pairs (15 unique * 2 = 30 values = 15 pairs)
+        n_pairs_per_cat = 3,                              // how many pairs per combination of pair type (accept/accept, reject/reject or accept/reject) and reward difference (24, 48... --> 4 in total)
+        n_pairs = 3*4*n_pairs_per_cat;                    // how many pairs perblock in total, for now hardcoded (3 pair types * 4 reward differences * pairs per category)
+
+    var current_block = 1,
+        new_block = true,
+        sequence_positions_multiplyer = 2,
+        sequence_length = sequence_positions_multiplyer * n_unique_positions;
+
+    var ITI = [300, 450, 600, 750],
+        ITI_shuffled = jsPsych.randomization.repeat(ITI, (block_length*4*conditions_multiplyer)/ITI.length);
+        ITI_shuffled_pairs = jsPsych.randomization.repeat(ITI, (n_pairs*4*conditions_multiplyer)/ITI.length);
+
+    var images = range(1, 361).map(x => 'VCSshapes/VCS_'+x+'.jpg'); // for preloading
+
+    var completion_code = 'INSTRUCTIONS', // for Prolific, updated throughout
+        fullscreen_check_on = true,
+        attention_checks_n = 3,
+        attention_checks_accuracy;
+
+    var data_sent = false;
+
+    var bonus_max = 2.5,
+        bonus_total = 0,
+        block_accuracy = 0;
+
+    var sd_slow = 30,
+        sd_fast = 999;
+
+    var pos_reward,
+        reward_positions_col   = jsPsych.randomization.shuffle([10, 190, 100, 280]),
+        reward_positions_shape = jsPsych.randomization.shuffle([10, 190, 100, 280]),
+        reward_default = 90, // default deault reward value (0-180), gets converted to 0-100 scale
+        reward_sd = step_size/2, // half a step
+        reward_dur = 1000, //in ms
+        reward_interval = 60; // min distance from reward position in previous block with the same relevant feature, in degrees
+
+    var col_congruent     = {'data': {'block_type': 'col_congruent',     'sd_color': sd_slow, 'sd_shape': sd_fast, 'rewarded': 'color', 'prior': 'congruent'}},
+        col_incongruent   = {'data': {'block_type': 'col_incongruent',   'sd_color': sd_fast, 'sd_shape': sd_slow, 'rewarded': 'color', 'prior': 'incongruent'}},
+        shape_congruent   = {'data': {'block_type': 'shape_congruent',   'sd_color': sd_fast, 'sd_shape': sd_slow, 'rewarded': 'shape', 'prior': 'congruent'}},
+        shape_incongruent = {'data': {'block_type': 'shape_incongruent', 'sd_color': sd_slow, 'sd_shape': sd_fast, 'rewarded': 'shape', 'prior': 'incongruent'}},
+        conditions = Array(conditions_multiplyer).fill([col_congruent, col_incongruent, shape_congruent, shape_incongruent]).map(x => jsPsych.randomization.shuffle(x)).flat(),
+        sequence_specs = Array(sequence_length*conditions.length),
+        trial_specs = Array(block_length*conditions.length),
+        pair_specs = Array(n_pairs * conditions.length).fill().map(x => ({data:{}})),
+        offsets = jsPsych.randomization.shuffle(range(0,step_size, step=step_size/conditions.length)); // if change step_size check that this still works
+
+    var response_specs = [{f: 'Accept', j: 'Reject'},
+                          {f: 'Reject', j: 'Accept'}],
+        response_side_arr = jsPsych.randomization.shuffle(Array(block_length*conditions.length/2).fill(response_specs[0]).concat(Array(block_length*conditions.length/2).fill(response_specs[1]))),
+        response_side;
+
+    // ---------------------------------------- Build timeline variables --------------------------------------------------------------------
+    for (var c = 0; c < conditions.length; c++) { // for each block
+      // 0.1 SAMPLE FEATURE SEQUENCES FOR INITIAL SEQUENCES ---------------------------------------------------------------------------------
+      var all_positions = Array(sequence_positions_multiplyer).fill(range(0, 360, step_size)); // arrays of unique values equidistant around circle
+
+      // OFFSET feature spaces for block (so there are different angles in *every* block)
+      for (var i = 0; i < all_positions.length; i++) {
+        all_positions[i] = all_positions[i].map(function (elem) {
+          elem = elem + offsets[c];
+          while(elem > 359) elem = elem-360;
+          return elem;
+        });
+      };
+
+      // CHAINS for fast and slow features
+      var all_positions_slow = JSON.parse(JSON.stringify(all_positions)),
+          all_positions_fast = JSON.parse(JSON.stringify(all_positions)),
+          pos_slow  = Array(sequence_length),
+          pos_fast  = Array(sequence_length);
+
+      for (var h = 0; h < sequence_positions_multiplyer; h++) {
+        for (var i = 0; i < n_unique_positions; i++) {
+          if (h == 0 && i == 0) { //if first value, also: (pos_slow[0] == undefined)
+
+            // STARTING POSITIONS in each of the unique feature value sequences
+            pos_slow[0] = jsPsych.randomization.sampleWithoutReplacement(all_positions_slow[0], 1)[0];
+            pos_fast[0] = jsPsych.randomization.sampleWithoutReplacement(all_positions_fast[0], 1)[0];
+          } else {
+
+            // SAMPLE POSITIONS
+            // SLOW - from normal distribution
+            var pos_dist = all_positions_slow[h].map(x => (x - pos_slow[h*n_unique_positions+i-1] + 180 + 360) % 360 - 180), // distance between current and possible future values
+                ps = pos_dist.map(x => pdf(x, 0, sd_slow));                                             // generate probability density function over dist
+            pos_slow[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_slow[h], 1, ps)[0]; // select next value according to pdf
+            while(pos_slow[h*n_unique_positions+i] === pos_slow[h*n_unique_positions+i-1]) pos_slow[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_slow[h], 1, ps)[0]; // prevent same value from repeating, for case where h switches
+
+            // FAST -  randomly selected, min 2 steps // commented out: from normal distribution with wider sd
+            pos_dist = all_positions_fast[h].map(x => angle_dist(pos_fast[h*n_unique_positions+i-1], x)); // for normal distribution: all_positions_fast[h].map(x => (x - pos_fast[h*n_unique_positions+i-1] + 180 + 360) % 360 - 180);
+            ps = pos_dist.map(x => x == 0 || x == step_size ? 0 : 1); // for normal distribution: pos_dist.map(x => pdf(x, 0, sd_fast));
+            pos_fast[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_fast[h], 1, ps)[0];
+            while(pos_fast[h*n_unique_positions+i] === pos_fast[h*n_unique_positions+i-1]) pos_fast[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_fast[h], 1, ps)[0]; // won't get stuck on while, because only situation in which can choose same value is when are starting new set of unique values
+          }
+          // REMOVE used values
+          all_positions_slow[h].splice(all_positions_slow[h].indexOf(pos_slow[h*n_unique_positions+i]), 1);
+          all_positions_fast[h].splice(all_positions_fast[h].indexOf(pos_fast[h*n_unique_positions+i]), 1);
+        };
+      };
+
+      // PREVENT SINGLE STEP in fast chain
+      var ind_single_step = steps(pos_fast).indexOf(step_size),
+          removed_value;
+      while (ind_single_step != -1) {
+        removed_value = pos_fast.splice(ind_single_step, 1)[0];
+        pos_fast.splice(Math.floor(Math.random()*pos_fast.length), 0, removed_value);
+        ind_single_step = steps(pos_fast).indexOf(step_size)
+        if (ind_single_step == -1) {
+          ind_single_step = steps(pos_fast).indexOf(0); // check that didn't insert so that now there is a step of 0
+        }
+      };
+
+      // 0.2 CREATE TIMELINE VARIABLE FOR TRAINING TRIALS (LEARNING BLOCKS) ---------------------------------------------------------------------------------
+      for (var i = 0; i < sequence_length; i++) {
+        sequence_specs[c*sequence_length+i] = JSON.parse(JSON.stringify(conditions[c]));
+        sequence_specs[c*sequence_length+i].data.block = c+1;
+        sequence_specs[c*sequence_length+i].data.trial_number = c*sequence_length+i+1;
+        sequence_specs[c*sequence_length+i].data.trial_number_block = i+1;
+        sequence_specs[c*sequence_length+i].data.exp_part = 'sequence';
+
+        switch (conditions[c].data.block_type) {
+          case 'col_congruent':
+            sequence_specs[c*sequence_length+i].data.pos_color = pos_slow[i]; // save to data
+            sequence_specs[c*sequence_length+i].data.pos_shape = pos_fast[i];
+            sequence_specs[c*sequence_length+i].color = angle2rgb(pos_slow[i]); // save to use in experiment
+            sequence_specs[c*sequence_length+i].shape = 'VCSshapes/VCS_'+(pos_fast[i]+1)+'.jpg'; // +1 because shape range is [1-360]
+            break;
+          case 'col_incongruent':
+            sequence_specs[c*sequence_length+i].data.pos_color = pos_fast[i];
+            sequence_specs[c*sequence_length+i].data.pos_shape = pos_slow[i];
+            sequence_specs[c*sequence_length+i].color = angle2rgb(pos_fast[i]);
+            sequence_specs[c*sequence_length+i].shape = 'VCSshapes/VCS_'+(pos_slow[i]+1)+'.jpg';
+            break;
+          case 'shape_congruent':
+            sequence_specs[c*sequence_length+i].data.pos_color = pos_fast[i];
+            sequence_specs[c*sequence_length+i].data.pos_shape = pos_slow[i];
+            sequence_specs[c*sequence_length+i].color = angle2rgb(pos_fast[i]);
+            sequence_specs[c*sequence_length+i].shape = 'VCSshapes/VCS_'+(pos_slow[i]+1)+'.jpg';
+            break;
+          case 'shape_incongruent':
+            sequence_specs[c*sequence_length+i].data.pos_color = pos_slow[i];
+            sequence_specs[c*sequence_length+i].data.pos_shape = pos_fast[i];
+            sequence_specs[c*sequence_length+i].color = angle2rgb(pos_slow[i]);
+            sequence_specs[c*sequence_length+i].shape = 'VCSshapes/VCS_'+(pos_fast[i]+1)+'.jpg';
+            break;
+        }
+      };
+
+      // 1.1 SAMPLE FEATURE SEQUENCES FOR FOR TRAINING TRIALS (LEARNING BLOCKS) ---------------------------------------------------------------------------------
+      var all_positions = Array(block_positions_multiplyer).fill(range(0, 360, step_size)); // arrays of unique values equidistant around circle
+
+      // OFFSET feature spaces for block (so there are different angles in *every* block)
+      for (var i = 0; i < all_positions.length; i++) {
+        all_positions[i] = all_positions[i].map(function (elem) {
+          elem = elem + offsets[c];
+          while(elem > 359) elem = elem-360;
+          return elem;
+        });
+      };
+
+      // CHAINS for fast and slow features
+      var all_positions_slow = JSON.parse(JSON.stringify(all_positions)),
+          all_positions_fast = JSON.parse(JSON.stringify(all_positions)),
+          pos_slow  = Array(block_length),
+          pos_fast  = Array(block_length);
+
+      for (var h = 0; h < block_positions_multiplyer; h++) {
+        for (var i = 0; i < n_unique_positions; i++) {
+          if (h == 0 && i == 0) { //if first value, also: (pos_slow[0] == undefined)
+            // STARTING POSITIONS in each of the unique feature value sequences
+            pos_slow[0] = jsPsych.randomization.sampleWithoutReplacement(all_positions_slow[0], 1)[0];
+            pos_fast[0] = jsPsych.randomization.sampleWithoutReplacement(all_positions_fast[0], 1)[0];
+          } else {
+            // SAMPLE POSITIONS
+            // SLOW - from normal distribution
+            var pos_dist = all_positions_slow[h].map(x => (x - pos_slow[h*n_unique_positions+i-1] + 180 + 360) % 360 - 180), // distance between current and possible future values
+                ps = pos_dist.map(x => pdf(x, 0, sd_slow));                                             // generate probability density function over dist
+            pos_slow[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_slow[h], 1, ps)[0]; // select next value according to pdf
+            while(pos_slow[h*n_unique_positions+i] === pos_slow[h*n_unique_positions+i-1]) pos_slow[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_slow[h], 1, ps)[0]; // prevent same value from repeating, for case where h switches
+            // FAST -  randomly selected, min 2 steps // commented out: from normal distribution with wider sd
+            pos_dist = all_positions_fast[h].map(x => angle_dist(pos_fast[h*n_unique_positions+i-1], x)); // for normal distribution: all_positions_fast[h].map(x => (x - pos_fast[h*n_unique_positions+i-1] + 180 + 360) % 360 - 180);
+            ps = pos_dist.map(x => x == 0 || x == step_size ? 0 : 1); // for normal distribution: pos_dist.map(x => pdf(x, 0, sd_fast));
+            pos_fast[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_fast[h], 1, ps)[0];
+            while(pos_fast[h*n_unique_positions+i] === pos_fast[h*n_unique_positions+i-1]) pos_fast[h*n_unique_positions+i] = jsPsych.randomization.sampleWithReplacement(all_positions_fast[h], 1, ps)[0]; // won't get stuck on while, because only situation in which can choose same value is when are starting new set of unique values
+          }
+          // REMOVE used values
+          all_positions_slow[h].splice(all_positions_slow[h].indexOf(pos_slow[h*n_unique_positions+i]), 1);
+          all_positions_fast[h].splice(all_positions_fast[h].indexOf(pos_fast[h*n_unique_positions+i]), 1);
+        };
+      };
+
+      // PREVENT SINGLE STEP in fast chain
+      var ind_single_step = steps(pos_fast).indexOf(step_size),
+          removed_value;
+      while (ind_single_step != -1) {
+        removed_value = pos_fast.splice(ind_single_step, 1)[0];
+        pos_fast.splice(Math.floor(Math.random()*pos_fast.length), 0, removed_value);
+        ind_single_step = steps(pos_fast).indexOf(step_size)
+        if (ind_single_step == -1) {
+          ind_single_step = steps(pos_fast).indexOf(0); // check that didn't insert so that now there is a step of 0
+        }
+      };
+
+      // REWARD Position
+      if (conditions[c].data.rewarded == 'color') { // if relevant feature is colour
+        pos_reward = reward_positions_col.shift() + offsets[c];
+      } else {                                      // if relevant feature is shape
+        pos_reward = reward_positions_shape.shift() + offsets[c];
+      };
+
+      // 1.2 CREATE TIMELINE VARIABLE FOR TRAINING TRIALS (LEARNING BLOCKS) ---------------------------------------------------------------------------------
+      for (var i = 0; i < block_length; i++) {
+        trial_specs[c*block_length+i] = JSON.parse(JSON.stringify(conditions[c]));
+        trial_specs[c*block_length+i].ITI = ITI_shuffled[c*block_length+i];
+        trial_specs[c*block_length+i].data.block = c+1;
+        trial_specs[c*block_length+i].data.trial_number = c*block_length+i+1;
+        trial_specs[c*block_length+i].data.trial_number_block = i+1;
+        trial_specs[c*block_length+i].data.pos_reward = pos_reward;
+        trial_specs[c*block_length+i].data.exp_part = 'block';
+
+        switch (conditions[c].data.block_type) {
+          case 'col_congruent':
+            trial_specs[c*block_length+i].data.pos_color = pos_slow[i]; // save to data
+            trial_specs[c*block_length+i].data.pos_shape = pos_fast[i];
+            trial_specs[c*block_length+i].color = angle2rgb(pos_slow[i]); // save to use in experiment
+            trial_specs[c*block_length+i].shape = 'VCSshapes/VCS_'+(pos_fast[i]+1)+'.jpg'; // +1 because shape range is [1-360]
+            trial_specs[c*block_length+i].data.stimulus_reward = reward_fnc(pos_reward, trial_specs[c*block_length+i].data.pos_color); // stimulus reward, exact
+            // trial_specs[c*block_length+i].data.noisy_reward = noisy_reward_fnc(trial_specs[c*block_length+i].data.stimulus_reward, reward_sd); // added noise
+            trial_specs[c*block_length+i].data.rescaled_reward = rescale_reward(trial_specs[c*block_length+i].data.stimulus_reward); // rescaled 0-100
+            trial_specs[c*block_length+i].data.correct_choice = trial_specs[c*block_length+i].data.stimulus_reward >= 90 ? 1 : 0;
+            break;
+          case 'col_incongruent':
+            trial_specs[c*block_length+i].data.pos_color = pos_fast[i];
+            trial_specs[c*block_length+i].data.pos_shape = pos_slow[i];
+            trial_specs[c*block_length+i].color = angle2rgb(pos_fast[i]);
+            trial_specs[c*block_length+i].shape = 'VCSshapes/VCS_'+(pos_slow[i]+1)+'.jpg';
+            trial_specs[c*block_length+i].data.stimulus_reward = reward_fnc(pos_reward, trial_specs[c*block_length+i].data.pos_color);
+            // trial_specs[c*block_length+i].data.noisy_reward = noisy_reward_fnc(trial_specs[c*block_length+i].data.stimulus_reward, reward_sd);
+            trial_specs[c*block_length+i].data.rescaled_reward = rescale_reward(trial_specs[c*block_length+i].data.stimulus_reward);
+            trial_specs[c*block_length+i].data.correct_choice = trial_specs[c*block_length+i].data.stimulus_reward >= 90 ? 1 : 0;
+            break;
+          case 'shape_congruent':
+            trial_specs[c*block_length+i].data.pos_color = pos_fast[i];
+            trial_specs[c*block_length+i].data.pos_shape = pos_slow[i];
+            trial_specs[c*block_length+i].color = angle2rgb(pos_fast[i]);
+            trial_specs[c*block_length+i].shape = 'VCSshapes/VCS_'+(pos_slow[i]+1)+'.jpg';
+            trial_specs[c*block_length+i].data.stimulus_reward = reward_fnc(pos_reward, trial_specs[c*block_length+i].data.pos_shape);
+            // trial_specs[c*block_length+i].data.noisy_reward = noisy_reward_fnc(trial_specs[c*block_length+i].data.stimulus_reward, reward_sd);
+            trial_specs[c*block_length+i].data.rescaled_reward = rescale_reward(trial_specs[c*block_length+i].data.stimulus_reward);
+            trial_specs[c*block_length+i].data.correct_choice = trial_specs[c*block_length+i].data.stimulus_reward >= 90 ? 1 : 0;
+            break;
+          case 'shape_incongruent':
+            trial_specs[c*block_length+i].data.pos_color = pos_slow[i];
+            trial_specs[c*block_length+i].data.pos_shape = pos_fast[i];
+            trial_specs[c*block_length+i].color = angle2rgb(pos_slow[i]);
+            trial_specs[c*block_length+i].shape = 'VCSshapes/VCS_'+(pos_fast[i]+1)+'.jpg';
+            trial_specs[c*block_length+i].data.stimulus_reward = reward_fnc(pos_reward, trial_specs[c*block_length+i].data.pos_shape);
+            // trial_specs[c*block_length+i].data.noisy_reward = noisy_reward_fnc(trial_specs[c*block_length+i].data.stimulus_reward, reward_sd);
+            trial_specs[c*block_length+i].data.rescaled_reward = rescale_reward(trial_specs[c*block_length+i].data.stimulus_reward);
+            trial_specs[c*block_length+i].data.correct_choice = trial_specs[c*block_length+i].data.stimulus_reward >= 90 ? 1 : 0;
+            break;
+        }
+      };
+
+      // 2.1 SAMPLE PAIR POSITIONS FOR TEST TRIALS (FORCED CHOICE BLOCKS) ------------------------------------------------------------------------------
+      var pairs = []; // to be filled for each block
+
+      var pair_positions,
+          pair_rewards,
+          pair_responses,
+          pair_accept_ind,
+          pair_accept,
+          pair_reject_ind,
+          pair_reject,
+          pair_mixed,
+          pair_accept_differences,
+          pair_reject_differences,
+          pair_mixed_differences,
+          pair_allowed_differences,
+          pair_accept_selected,
+          pair_reject_selected,
+          pair_mixed_selected,
+          new_pair_ind,
+          new_pair;
+
+      // A ------------- get pair positions
+      pair_positions = JSON.parse(JSON.stringify(all_positions[0])); // use all_positions so that include offset for the block
+      pair_positions = pair_positions.map(function (elem) {
+        elem = Math.ceil(elem + step_size/2);
+        while(elem > 359) elem = elem-360; // (0 - 359)
+        return elem;
+      });
+
+      // B ------------- calculate reward value of each pair position (0-180)
+      pair_rewards = pair_positions.map(function (elem) {
+        return reward_fnc(elem, pos_reward); // USING EXACT REWARD (0-180)
+      });
+
+      // C ------------- get correct responses [accept/reject) for each position  - TODO: can be improved
+      pair_responses = pair_rewards.map(function (elem) {
+        if (elem > 90) {
+          return "accept"
+        } else {
+          return "reject"
+        }
+      });
+
+      // D ------------- get all unique pairs for each type of pair
+      // ACCEPT/ACCEPT
+      pair_accept_ind = getAllIndexes(pair_responses, "accept") // var pair_positions_accept = (pair_accept_ind.map(x => pair_positions[x]));
+      pair_accept = [].concat(...pair_accept_ind.map(
+          (v, i) => pair_accept_ind.slice(i+1).map( w => [v, w] ))
+      );
+
+      // REJECT/REJECT
+      pair_reject_ind = getAllIndexes(pair_responses, "reject")
+      pair_reject= [].concat(...pair_reject_ind.map(
+          (v, i) => pair_reject_ind.slice(i+1).map( w => [v, w] ))
+      );
+
+      // MIXED: ACCEPT/REJECT
+      pair_mixed= [].concat(...pair_accept_ind.map(
+          v => pair_reject_ind.map( w => [v, w] ))
+      );
+
+      // E -------------- range of allowed differences in reward between pairs
+      pair_allowed_differences = range(0, 90, step_size); // array of all possible reward differences between pairs (multiples of step_size), 90 is middle of 0-180 range
+      pair_allowed_differences.push(pair_allowed_differences[pair_allowed_differences.length-1] + step_size) // add one step to make sure that include 90 (done here instead of by extending range(), so it it can deal with any step_size)
+
+      // F -------------- calculate difference in value for each pair
+      pair_accept_differences = pair_accept.map(x => Math.abs(pair_rewards[x[0]] - pair_rewards[x[1]]));
+      pair_reject_differences = pair_reject.map(x => Math.abs(pair_rewards[x[0]] - pair_rewards[x[1]]));
+      pair_mixed_differences = pair_mixed.map(x => Math.abs(pair_rewards[x[0]] - pair_rewards[x[1]]));
+
+      // G ------------- loop through allowed differences select random 2 pairs from each type of pair
+      for (var j = 1; j < pair_allowed_differences.length; j++) {
+        pair_accept_selected = pair_accept_differences.map(function(diff, ind) {
+          if(diff > pair_allowed_differences[j-1] && diff <= pair_allowed_differences[j] ) return ind
+          else return null
+        }).filter(el => el != null);
+        if (pair_allowed_differences[j] == 96) {
+          pair_accept_selected = jsPsych.randomization.sampleWithoutReplacement(pair_accept_selected, Math.min(0, pair_accept_selected.length));
+        } else {
+          pair_accept_selected = jsPsych.randomization.sampleWithoutReplacement(pair_accept_selected, Math.min(n_pairs_per_cat, pair_accept_selected.length));
+        }
+
+        pair_reject_selected = pair_reject_differences.map(function(diff, ind) {
+          if(diff > pair_allowed_differences[j-1] && diff <= pair_allowed_differences[j] ) return ind
+          else return null
+        }).filter(el => el != null);
+        if (pair_allowed_differences[j] == 96) {
+          pair_reject_selected = jsPsych.randomization.sampleWithoutReplacement(pair_reject_selected, Math.min(0, pair_reject_selected.length));
+        } else {
+          pair_reject_selected = jsPsych.randomization.sampleWithoutReplacement(pair_reject_selected, Math.min(n_pairs_per_cat, pair_reject_selected.length));
+        }
+
+        pair_mixed_selected = pair_mixed_differences.map(function(diff, ind) {
+          if(diff > pair_allowed_differences[j-1] && diff <= pair_allowed_differences[j] ) return ind
+          else return null
+        }).filter(el => el != null);
+        if (pair_allowed_differences[j] == 96) {
+          pair_mixed_selected = jsPsych.randomization.sampleWithoutReplacement(pair_mixed_selected, Math.min(n_pairs_per_cat*3, pair_mixed_selected.length));
+        } else {
+          pair_mixed_selected = jsPsych.randomization.sampleWithoutReplacement(pair_mixed_selected, Math.min(n_pairs_per_cat, pair_mixed_selected.length));
+        }
+
+        // H -------------- save pairs to array
+        for (var k = 0; k < n_pairs_per_cat*3; k++) {
+          // ACCEPT/ACCEPT
+          new_pair_ind = pair_accept[pair_accept_selected[k]];
+          if (new_pair_ind != undefined) {
+            new_pair = [jsPsych.randomization.shuffle([pair_positions[new_pair_ind[0]], pair_positions[new_pair_ind[1]]])]; // shuffle screen side to present pair elements on
+            new_pair[1] = pair_rewards[pair_positions.indexOf(new_pair[0][0])];
+            new_pair[2] = pair_rewards[pair_positions.indexOf(new_pair[0][1])]
+            pairs.push(new_pair);
+          }
+
+          // REJECT/REJECT
+          new_pair_ind = pair_reject[pair_reject_selected[k]];
+          if (new_pair_ind != undefined) {
+            new_pair = [jsPsych.randomization.shuffle([pair_positions[new_pair_ind[0]], pair_positions[new_pair_ind[1]]])]; // shuffle screen side to present pair elements on
+            new_pair[1] = pair_rewards[pair_positions.indexOf(new_pair[0][0])];
+            new_pair[2] = pair_rewards[pair_positions.indexOf(new_pair[0][1])]
+            pairs.push(new_pair);
+          }
+
+          // MIXED: ACCEPT/REJECT
+          new_pair_ind = pair_mixed[pair_mixed_selected[k]];
+          if (new_pair_ind != undefined) {
+            new_pair = [jsPsych.randomization.shuffle([pair_positions[new_pair_ind[0]], pair_positions[new_pair_ind[1]]])]; // shuffle screen side to present pair elements on
+            new_pair[1] = pair_rewards[pair_positions.indexOf(new_pair[0][0])];
+            new_pair[2] = pair_rewards[pair_positions.indexOf(new_pair[0][1])]
+            pairs.push(new_pair);
+          }
+        };
+      };
+      // shuffle order of pairs
+      pairs = jsPsych.randomization.shuffle(pairs);
+
+      // -------------- IRRELEVANT FEATURE: same pair positions, random pairs
+      var off_pairs = [].concat(...pair_positions.map(
+          (v, i) => pair_positions.slice(i+1).map( w => jsPsych.randomization.shuffle([v, w]) ))
+      );
+      off_pairs = jsPsych.randomization.sampleWithoutReplacement(off_pairs, pairs.length).flat();
+
+      // 2.2 CREATE TIMELINE VARIABLE FOR FORCED CHOICE TRIALS -------------------------------------------------------------
+      for (var i = 0; i < pairs.length; i++) {
+        pair_specs[c*n_pairs+i] = JSON.parse(JSON.stringify(conditions[c]));
+        pair_specs[c*n_pairs+i].ITI = ITI_shuffled_pairs[c*n_pairs+i];
+        pair_specs[c*n_pairs+i].data.block = c+1;
+        pair_specs[c*n_pairs+i].data.pos_reward = pos_reward;
+        pair_specs[c*n_pairs+i].data.reward_left = pairs[i][1];
+        pair_specs[c*n_pairs+i].data.reward_right = pairs[i][2];
+        pair_specs[c*n_pairs+i].data.reward_diff = Math.abs(pair_specs[c*n_pairs+i].data.reward_left - pair_specs[c*n_pairs+i].data.reward_right);
+        pair_specs[c*n_pairs+i].data.correct_index = (pair_specs[c*n_pairs+i].data.reward_left > pair_specs[c*n_pairs+i].data.reward_right) ? 0 : 1; // which side stimulus with more reward is on, 0 = left, 1 = right
+        pair_specs[c*n_pairs+i].data.correct_key = Object.keys(response_specs[0])[pair_specs[c*n_pairs+i].data.correct_index]; // 0 = f = left, 1 = j = right
+        pair_specs[c*n_pairs+i].data.pair_number = c*n_pairs+i+1;
+        pair_specs[c*n_pairs+i].data.pair_number_block = i+1;
+        pair_specs[c*n_pairs+i].data.exp_part = 'pairs';
+
+        switch (conditions[c].data.rewarded) {
+          case 'color':
+            pair_specs[c*n_pairs+i].data.pos_color_left  = pairs[i][0][0];
+            pair_specs[c*n_pairs+i].data.pos_color_right = pairs[i][0][1];
+            pair_specs[c*n_pairs+i].data.pos_shape_left  = off_pairs.shift();
+            pair_specs[c*n_pairs+i].data.pos_shape_right = off_pairs.shift();
+            pair_specs[c*n_pairs+i].colors = [angle2rgb(pair_specs[c*n_pairs+i].data.pos_color_left), angle2rgb(pair_specs[c*n_pairs+i].data.pos_color_right)];
+            pair_specs[c*n_pairs+i].shapes = ['VCSshapes/VCS_'+(pair_specs[c*n_pairs+i].data.pos_shape_left+1)+'.jpg', 'VCSshapes/VCS_'+(pair_specs[c*n_pairs+i].data.pos_shape_right+1)+'.jpg'];
+            break;
+          case 'shape':
+            pair_specs[c*n_pairs+i].data.pos_color_left  = off_pairs.shift();
+            pair_specs[c*n_pairs+i].data.pos_color_right = off_pairs.shift();
+            pair_specs[c*n_pairs+i].data.pos_shape_left  = pairs[i][0][0];
+            pair_specs[c*n_pairs+i].data.pos_shape_right = pairs[i][0][1];
+            pair_specs[c*n_pairs+i].colors = [angle2rgb(pair_specs[c*n_pairs+i].data.pos_color_left), angle2rgb(pair_specs[c*n_pairs+i].data.pos_color_right)];
+            pair_specs[c*n_pairs+i].shapes = ['VCSshapes/VCS_'+(pair_specs[c*n_pairs+i].data.pos_shape_left+1)+'.jpg', 'VCSshapes/VCS_'+(pair_specs[c*n_pairs+i].data.pos_shape_right+1)+'.jpg'];
+            break;
+        };
+      };
+    };
+
+    /* ----- EXPERIMENT TRIALS ----- */
+    var timeline = [];
+
+    var consent_info = {
+      type: 'instructions',
+      pages: consent_text,
+      show_clickable_nav: true
+    }
+
+    var consent_button = {
+    type: 'html-button-response',
+    stimulus: consent_statement,
+    choices: ['Yes']
+    };
+
+    var fullscreen_enter = {
+      type: 'fullscreen',
+      fullscreen_mode: true,
+      message: '<p>The experiment will switch to full screen mode when you press the button below. '+
+      '<b>Please remain in full screen mode for the entire experiment.</b> '+
+      'If you exit full screen mode, there is no guarantee we can compensate you.</p>',
+      on_finish: function () {
+        jsPsych.data.addProperties({
+          window_resolution: window.innerWidth + ' x ' + window.innerHeight
+        })
+      }
+    };
+
+    var instructions = {
+      type: 'instructions',
+      pages: instructions_text,
+      show_clickable_nav: true
+    }
+    timeline.push(consent_info, consent_button, fullscreen_enter, instructions);
+
+    // attention_check questions
+    attention_checks = jsPsych.randomization.shuffle([].concat(attention_checks[0], jsPsych.randomization.shuffle(attention_checks.slice(1,attention_checks.length)).slice(0, attention_checks_n-1)));
+
+    var attention_checks_filter = {
+      type: "html-keyboard-response",
+      choices: ['space'],
+      stimulus: '',
+      on_start: function(trial){
+        attention_checks_accuracy = jsPsych.data.get().filter({exp_part: 'attention_check'}).select('correct').sum();
+        if (attention_checks_accuracy >= attention_checks_n-1) { // if all correct
+          trial.stimulus = "<p>Well done! You have answered the questions correctly and will now start the task.</p>" +
+          "<p>Remember: </p>" +
+          "<p>At each new forest you will first speak to the elders and see their gems. Then you have the chance to hunt for gems yourself. </p>" +
+          "<ul> <li>If you <b>accept</b> a gem, you will see how much money you got for selling it (between 0 and 100 coins).</li> " +
+          "<li>If you <b>reject</b>, you will get 50 coins for the other goods you sell at the market. </li></ul>" +
+          "Learning how to recognise valuable gems will help you decide whether you should accept or reject a given gem. " +
+          "<p>Press space to start the task.</p>";
+        } else {
+          trial.trial_duration = 60000;
+          trial.stimulus = "<p>Unfortunately several of your answers were incorrect and you cannot continue with the task.</p>" +
+          "<p>Press space to be redirected to Prolific. (You will be redirected automatically after one minute.)</p>";
+        }
+      },
+      on_finish: function(data){
+        if (attention_checks_accuracy >= attention_checks_n-1) { // if all correct
+          completion_code = 'TASK';
+          // hides cursor
+          document.querySelector('head').insertAdjacentHTML('beforeend', '<style id="cursor-toggle"> html { cursor: none; } </style>');
+        } else {
+          completion_code = 'ATTENTION';
+          if (!data_sent) {
+            data_sent = true;
+            var data = jsPsych.data.get().json();
+            console.log(data);
+            // // local save
+            // jsPsych.data.get().localSave('csv','slow_prior_finish_'+subject+'.csv');
+            // server save
+            jatos.studySessionData.completion_code = completion_code;
+            jatos.studySessionData.bonus =  bonus_total.toFixed(2);
+            jatos.startNextComponent(data);
+          };
+        }
+      },
+      post_trial_gap: 500,
+      min_stimulus_duration: 500
+    };
+    timeline.push(...attention_checks, attention_checks_filter);
+
+    //countdown
+    var countdown = {
+      type: 'html-keyboard-response',
+      stimulus: jsPsych.timelineVariable('text'),
+      choices: jsPsych.NO_KEYS,
+      trial_duration: 1000
+    };
+    var countdown_stimuli_first = [
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the first village...</p>'+
+      '<p style="font-size:40px; color:white;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px; color:white;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the first village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px; color:white;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the first village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the first village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">2</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the first village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">1</p></div>'}
+    ];
+    var countdown_procedure_first = {
+      timeline: [countdown],
+      timeline_variables: countdown_stimuli_first,
+    };
+    timeline.push(countdown_procedure_first);
+
+    var sequence = { // show sequence of stimuli before block
+      type: 'canvas-keyboard-response',
+      stimulus: jsPsych.timelineVariable('shape'),
+      stimulus_height: 360,
+      stimulus_width: 360,
+      stimulus_color: jsPsych.timelineVariable('color'),
+      choices: jsPsych.NO_KEYS,
+      trial_duration: 500,
+      data: jsPsych.timelineVariable('data')
+    };
+
+    var sequence_end = {
+      type: 'html-keyboard-response',
+      stimulus: '<p>The village elders have shown you all the gems they know. <br>' +
+      'Now you can start hunting for gems yourself! </p>' +
+      '<p>Please place your left index finger on the <kbd>F</kbd> and your right index finger on the <kbd>J</kbd> key now.</p>' +
+      '<p>Please press space to continue. </p>',
+      choices: ['space'],
+      min_stimulus_duration: 100
+    };
+
+    var countdown_stimuli_sequence_end = [
+      { text: '<div  style="text-align: center"><p style="font-size:40px;">Hiking to the forest...</p>'+
+      '<p style="font-size:60px;">3</p></div>'},
+      { text: '<div  style="text-align: center"><p style="font-size:40px;">Hiking to the forest...</p>'+
+      '<p style="font-size:60px;">2</p></div>'},
+      { text: '<div  style="text-align: center"><p style="font-size:40px;">Hiking to the forest...</p>'+
+      '<p style="font-size:60px;">1</p></div>'}
+    ];
+    var countdown_procedure_sequence_end = {
+      timeline: [countdown],
+      timeline_variables: countdown_stimuli_sequence_end,
+    };
+
+    var sequence_end_procedure = {
+      timeline: [sequence_end, countdown_procedure_sequence_end],
+      conditional_function: function(){
+        var last_trial = jsPsych.data.get().filter({exp_part: 'sequence'}).last().values()[0]; // get last trial // change to sequence
+        if (last_trial.trial_number % sequence_length == 0) {
+          new_block = false;
+          return true;  // end of sequence
+        } else {
+          return false; // not end of sequence
+        }
+      }
+    };
+
+    var block_start_procedure = {
+      timeline: [sequence, sequence_end_procedure],
+      timeline_variables: sequence_specs,
+      sample: { // show only the stimuli for that block
+        type: 'custom',
+        fn: function(t) {
+          return sequence_specs.filter(function (trial) {
+            if (trial.data.block == current_block) return trial
+          }).map(x => sequence_specs.indexOf(x));
+        }
+      },
+      conditional_function: function(){ // only show sequence at start of new block
+        if (new_block) {
+          return true;  // show sequence
+        } else {
+          return false; // don't show sequence
+        }
+      }
+    };
+
+    var trial = { // learning trials
+      type: 'canvas-keyboard-response',
+      stimulus: jsPsych.timelineVariable('shape'),
+      stimulus_height: 360,
+      stimulus_width: 360,
+      stimulus_color: jsPsych.timelineVariable('color'),
+      choices: Object.keys(response_specs[0]),
+      trial_duration: 4000,
+      data: jsPsych.timelineVariable('data'),
+      on_start: function (trial) {
+        // response label side
+        response_side = response_side_arr.pop();
+        trial.data.label_left = response_side.f;
+        trial.data.label_right = response_side.j;
+        trial.label = '<div style="position: absolute; left: 50%; bottom: 15%">' +
+        '<div style="position: relative; left: -50%; width:30vw">' +
+        '<div style="float: left; font-size: 25px">'+response_side.f+'</div>' +
+        '<div style="float: right; font-size: 25px">'+response_side.j+'</div>' +
+        '</div>' +
+        '</div>';
+      },
+      on_finish: function (data) {
+        if (data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('f') && response_side.f == "Accept" || data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('j') && response_side.j == "Accept") { // if accept
+          data.choice = 1; //'accept'
+          data.received_reward = data.rescaled_reward
+        } else if (data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('f') && response_side.f == "Reject" || data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('j') && response_side.j == "Reject") {
+          data.choice = 0//'reject'
+          data.received_reward = rescale_reward(90);
+        } else if (data.key_press == null) {
+          data.choice = -1//'timeout'
+          data.received_reward = 0;
+        }
+        data.correct = data.choice == data.correct_choice;
+      }
+    };
+
+    var reward = {
+      type: 'html-keyboard-response',
+      stimulus: function () {
+        var last_trial = jsPsych.data.getLastTrialData().values()[0];
+        var html_string = '<p style="font-size: 48px;">'+last_trial.received_reward+'</p>';
+        if (last_trial.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('f')) { // left
+          html_string += '<div style="position: absolute; left: 50%; bottom: 15%">' +
+          '<div style="position: relative; left: -50%; width:30vw">' +
+          '<div style="float: left; font-size: 25px">'+response_side.f+'</div>' +
+          '<div style="float: right; font-size: 25px"></div>' +
+          '</div>' +
+          '</div>';
+        } else if (last_trial.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode('j')) {
+          html_string += '<div style="position: absolute; left: 50%; bottom: 15%">' +
+          '<div style="position: relative; left: -50%; width:30vw">' +
+          '<div style="float: left; font-size: 25px"></div>' +
+          '<div style="float: right; font-size: 25px">'+response_side.j+'</div>' +
+          '</div>' +
+          '</div>';
+        }
+        return html_string;
+      },
+      choices: jsPsych.NO_KEYS,
+      trial_duration: reward_dur
+    };
+
+    var too_slow = {
+      type: 'html-keyboard-response',
+      stimulus: '<p>Too slow! Please press space to continue.</p>',
+      choices: ['space'],
+      min_stimulus_duration: 100
+    };
+
+    var too_slow_procedure = {
+      timeline: [too_slow],
+      conditional_function: function(){
+        var last_trial = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().values()[0]; // get last trial
+        if (last_trial.choice == -1) { // if no response
+          return true; // show
+        } else {
+          return false; // don't show
+        }
+      }
+    };
+
+    var interval = {
+      type: 'html-keyboard-response',
+      stimulus: '<p></p>',
+      choices: jsPsych.NO_KEYS,
+      trial_duration: jsPsych.timelineVariable('ITI')
+    };
+
+    var block_transition = {
+      type: 'html-keyboard-response',
+      stimulus: "<p>Well done, you've finished gathering gems in this forest. </p>" +
+      "<p>Now the village elders have summoned you! </p>" +
+      "<p>They will test your knowledge of the value of the gems. <br>" +
+      "You will see pairs of gem stones on the screen. " +
+      "Please choose the gem stone you think is worth more coins, based on what you have learnt in this forest.</p>" +
+      "<p>Please use <kbd>F</kbd> to choose the left gem and <kbd>J</kbd> to choose the right gem.<br>" +
+      "Press space to continue.</p>",
+      choices: ['space'],
+      min_stimulus_duration: 500
+    };
+
+    var pair_choice = { // test trials
+      type: 'canvas-keyboard-response',
+      prompt: '<p style="text-align: center; font-size:30px">Which gem stone is more valuable?</p>',
+      label: '<div style="width:400px; margin:auto"> <kbd style="float: left; font-size:25px">F</kbd> <kbd style="float: right; font-size:25px">J</kbd> </div>',
+      stimulus: jsPsych.timelineVariable('shapes'),
+      stimulus_height: 360,
+      stimulus_width: 360,
+      stimulus_color: jsPsych.timelineVariable('colors'),
+      choices: Object.keys(response_specs[0]),
+      data: jsPsych.timelineVariable('data'),
+      on_finish: function (data) {
+        if (data.key_press == jsPsych.pluginAPI.convertKeyCharacterToKeyCode(data.correct_key)) {
+          data.correct = true;
+        } else {
+          data.correct = false;
+        }
+      }
+    };
+
+    var choice_procedure = {
+      timeline: [pair_choice, interval],
+      timeline_variables: pair_specs,
+      sample: {
+        type: 'custom',
+        fn: function(t) {
+          var last_trial = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().values()[0];
+          if (last_trial) {
+            return pair_specs.filter(function (pair) {
+              if (pair.data.block == last_trial.block) return pair
+            }).map(x => pair_specs.indexOf(x));
+          };
+        }
+      }
+    };
+
+    var block_break = {
+      type: 'html-keyboard-response',
+      stimulus: function () {
+        // var current_block = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().select('block').values[0];
+        block_accuracy = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response', block: current_block}).select('correct').mean();
+        bonus_total += bonus_max/conditions.length*block_accuracy;
+
+        var stimulus_text = '<p>You have completed ' + current_block + ' out of the ' + conditions.length + ' forests! </p>' +
+        "<p>In this forest, the accuracy of your decisions while gathering gems and in the elders' test was "+ Math.floor(block_accuracy*100) +'%. '+
+        'This corresponds to a bonus of ' + (bonus_max/conditions.length*block_accuracy).toFixed(2) + ' GBP out of a possible ' +
+        (bonus_max/conditions.length).toFixed(2) + ' GBP. Your accumulated total bonus lies at ' + bonus_total.toFixed(2) +' GBP.</p>'
+
+        if (jsPsych.data.get().filter({exp_part: 'block'}).last().select('trial_number').values[0] !== block_length*conditions.length) {
+          stimulus_text += '<p>Try to beat your score in the next round!</p>'
+        };
+
+        stimulus_text += '<p>You now have time for a short break, press space to continue to the next forest. </p>' +
+        '<p><b>ATTENTION</b>: Please remain in full screen mode for the entire experiment. If you exit full screen mode, there is no guarantee we can compensate you. </p>'
+        return stimulus_text
+      },
+      on_finish: function (data) {
+        data.block_accuracy = block_accuracy;
+        data.bonus_total = bonus_total;
+        current_block += 1;
+        new_block = true;
+      },
+      choices: ['space'],
+      min_stimulus_duration: 300
+    };
+
+    var countdown_stimuli_next = [ // countdown for between blocks:
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the next village...</p>'+
+      '<p style="font-size:40px; color:white;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px; color:white;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the next village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px; color:white;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the next village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">3</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the next village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">2</p></div>'},
+      { text: '<div  style="text-align: center; line-height:1.5;"><p style="font-size:40px;">Speaking to the elders at the next village...</p>'+
+      '<p style="font-size:40px;">They will show you their gems in: </p>' +
+      '<p style="font-size:60px;">1</p></div>'}
+    ];
+    var countdown_procedure_next = {
+      timeline: [countdown],
+      timeline_variables: countdown_stimuli_next,
+    };
+
+    var break_procedure = {
+      timeline: [block_break, countdown_procedure_next],
+      conditional_function: function(){
+        var last_trial = jsPsych.data.get().filter({exp_part: 'block'}).last().values()[0]; // get last trial
+        if (last_trial.trial_number !== (block_length*conditions.length)) {
+          return true;  // show break screen
+        } else {
+          return false; // don't show break screen
+        }
+      }
+    };
+
+    var block_end_procedure = {
+      timeline: [block_transition, choice_procedure, break_procedure],
+      conditional_function: function(){
+        var last_trial = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().values()[0]; // get last trial
+        if (last_trial.trial_number % block_length == 0) {
+          return true;  // end of block
+        } else {
+          return false; // not end of block
+        }
+      }
+    };
+
+    var trial_procedure = {
+      timeline: [block_start_procedure, trial, reward, too_slow_procedure, interval, block_end_procedure],
+      timeline_variables: trial_specs
+    };
+    timeline.push(trial_procedure);
+
+    var save_accuracy = {
+      type: 'call-function',
+      func: function () {
+        // calculate accuracy last block
+        var last_block = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().select('block').values[0];
+        block_accuracy = jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response', block: last_block}).select('correct').mean();
+        bonus_total += bonus_max/conditions.length*block_accuracy;
+      },
+      on_finish: function (data) {
+        console.log('saved');
+        data.block_accuracy = block_accuracy;
+        data.bonus_total = bonus_total;
+        // save bonus to jatos study session data, for easier paying of participants
+        jatos.studySessionData.bonus = bonus_total.toFixed(2);
+      }
+    };
+
+    var task_end = {
+      type: 'html-keyboard-response',
+      stimulus: function () {
+        var total_percentage = jsPsych.data.get().select('block_accuracy').mean();
+        return "<p>You have completed the task! </p>" +
+        "<p>Overall you were " + Math.floor(total_percentage*100) + "% accurate, which corresponds to a bonus payment of " + bonus_total.toFixed(2) + " GBP. <br>"+
+        "Before finishing the experiment we'd like to ask you a few final questions. </p>" +
+        "<p>Press space to continue.</p>"
+      },
+      min_stimulus_duration: 300,
+      choices: ['space'],
+      on_start: function () {
+        // show cursor
+        document.querySelector('#cursor-toggle').remove();
+        // save accuracy to jatos study session data
+        var total_percentage = jsPsych.data.get().select('block_accuracy').mean();
+        jatos.studySessionData.total_percentage =  Math.floor(total_percentage*100);
+      }
+    };
+
+    var gender = {
+      type: 'survey-multi-choice',
+      questions: [
+        {prompt: "What is your gender identity?", name: 'gender', options: ["Female", "Male", "Gender diverse"], horizontal:true, required:true},
+        {prompt: "Are you left or right handed?", name: 'handedness', options: ["Left", "Right"], horizontal:true, required:true},
+        {prompt: "Do you have any known colourblindness?", name: 'colourblind', options: ["Yes", "No"], horizontal:true, required:true}
+      ],
+      data: {exp_part: 'demographics'}
+    };
+
+    var age = {
+      type: 'survey-text',
+      questions: [{prompt: "How old are you?", name: "age", required:true}],
+      data: {exp_part: 'demographics'}
+    };
+
+    var feedback = {
+      type: 'survey-text',
+      questions: [
+        {prompt: "Did you use a strategy to solve the task? If so, which one?", name: "strategy", rows:8, columns: 60},
+        {prompt: "Did you notice any difference between the blocks (forests)? If so, what?", name: "block_difference", rows:8, columns: 60}
+      ],
+      data: {exp_part: 'feedback'},
+      on_finish:function () {
+          fullscreen_check_on = false;
+        }
+    };
+
+    var squares = {
+      type: 'survey-multi-choice',
+      questions: [
+        {prompt: "Did all gems have a shape (abstract line) or did some gems look like coloured squares? <br>We ask for technical reasons, it does not relate to the task.", name: 'squares', 
+        options: ["I saw only shapes", "I saw some squares", "I saw only squares"], horizontal:true, required:true},
+      ],
+      data: {exp_part: 'feedback'}
+    };
+
+    var fullscreen_exit = {
+      type: 'fullscreen',
+      fullscreen_mode: false,
+      message: '<p>Exiting fullscreen.</p>'
+    };
+
+    var debrief = {
+      type: 'html-keyboard-response',
+      stimulus: debrief_text,
+      trial_duration: 60000,
+      min_stimulus_duration: 300,
+      choices: ['space']
+    };
+    timeline.push(save_accuracy, task_end, gender, age, feedback, squares, fullscreen_exit, debrief);
+
+    /* ----- START EXPERIMENT ----- */
+    jatos.onLoad(function() {
+      // get Prolific ID
+      // var prolific_id = jsPsych.data.getURLVariable('PROLIFIC_PID');
+      var prolific_id = jatos.urlQueryParameters.PROLIFIC_PID;
+      var ids_json = JSON.stringify({subject: subject, prolific_id: prolific_id, experiment: 'slowness_prior'});
+
+      jsPsych.init({
+          timeline: timeline,
+          preload_images: images,
+          on_finish: function () { // end of experiment
+            if (!data_sent) {
+              data_sent = true;
+              var data = jsPsych.data.get().json();
+              console.log(data);
+              // // local save
+              // jsPsych.data.get().localSave('csv','slow_prior_finish_'+subject+'.csv');
+              // server save
+              jatos.studySessionData.completion_code = "XXX";
+              jatos.studySessionData.bonus =  bonus_total.toFixed(2);
+              jatos.startNextComponent(data);
+            };
+          },
+          on_close: function(){ // closing browser window before end of experiment
+            if (!data_sent) {
+              data_sent = true;
+              var data = jsPsych.data.get().json();
+              console.log(data);
+              // // local save
+              // jsPsych.data.get().localSave('csv','slow_prior_close_'+subject+'.csv');
+              // server save
+              jatos.studySessionData.completion_code = completion_code;
+              jatos.studySessionData.bonus =  bonus_total.toFixed(2);
+              jatos.startNextComponent(data);
+            };
+          },
+          on_interaction_data_update: function(data) { // end experiment if ppt exits fullscreen
+            if (fullscreen_check_on) {
+              if (JSON.stringify(data.event)==='"fullscreenexit"') {
+                if (!data_sent) {
+                  data_sent = true;
+                  var data = jsPsych.data.get().json();
+                  console.log(data);
+                  // // local save
+                  // alert("Unfortunately you have left fullscreen mode and cannot continue with the experiment. \nClosing this alert will redirect you to Prolific. \n \nPlease contact us if you think there was a mistake.");
+                  // jsPsych.data.get().localSave('csv','slow_prior_close_'+subject+'.csv');
+                  // append last trial number to completion code
+                  if (jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().values()[0]) {
+                    completion_code += '_'+jsPsych.data.get().filter({trial_type: 'canvas-keyboard-response'}).last().select('trial_number').values[0];
+                  };
+                  // server save
+                  jatos.studySessionData.completion_code = completion_code;
+                  jatos.studySessionData.bonus =  bonus_total.toFixed(2);
+                  jatos.startNextComponent(data); 
+                };
+              }
+            }
+          }
+      })
+  })
+
+    </script>
+</html>
