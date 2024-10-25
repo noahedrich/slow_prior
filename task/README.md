@@ -21,8 +21,12 @@ If you don't want to run it through JATOS, you need to remove the code pertainin
 
 
 ## Resources
-*  The stimuli are constructed by combining the shapes from the [Validated Circular Shape space](https://osf.io/d9gyf/) with colours based on CIELAB colour space.
+The stimuli are constructed by combining the shapes from the [Validated Circular Shape space](https://osf.io/d9gyf/) with colours based on CIELAB colour space. If you reuse the shape stimuli inside the `/VCSshapes` folder, please make sure to cite the original authors:
 
+> Li, A. Y., Liang, J. C., Lee, A. C. H., & Barense, M. D. (2020). 
+> The validated circular shape space: Quantifying the visual similarity of shape. 
+> Journal of Experimental Psychology: General, 149(5), 949–966. 
+> https://doi.org/10.1037/xge0000693
 
 ## Note
 On occasion, the stimuli shapes do not display correctly. The debrief questions at the end of the experiment include a check of whether this was the case. Make sure to check the responses to this question when collecting data with this task. 

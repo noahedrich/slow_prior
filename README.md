@@ -27,5 +27,5 @@ See the READMEs in each folder for further details.
 
 
 ## License
-All code in this repository is licensed under the Creative Commons Attribution NonCommercial ShareAlike 4.0 International Public License.
-Please see https://creativecommons.org/licenses/by-nc-sa/4.0/ for details.
+All code in this repository is licensed under the Creative Commons Attribution ShareAlike 4.0 International Public License.
+Please see https://creativecommons.org/licenses/by-sa/4.0/ or the LICENSE file for details.
